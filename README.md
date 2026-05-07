@@ -18,6 +18,11 @@ import automate_unsupervised_dataset_generation.automate
 query = "Artificial Intelligence"
 num_page = 5
 results = automate_unsupervised_dataset_generation.automate.parallel_scraping(query,num_page)
+
+query = ["Artificial Intelligence","Cake"]
+num_page = 1
+rv = automate_unsupervised_dataset_generation.automate.scale_parallel_scraping(query,num_page)
+pprint(rv)
 ```
 
 ## License
