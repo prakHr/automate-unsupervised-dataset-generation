@@ -17,7 +17,7 @@ pip install automate-unsupervised-dataset-generation
 import automate_unsupervised_dataset_generation.automate
 query = "Artificial Intelligence"
 num_page = 5
-results = automate_unsupervised_dataset_generation.automate.parallel_scraping(query,num_page)    
+results = automate_unsupervised_dataset_generation.automate.parallel_scraping(query,num_page)
 ```
 
 ## License
