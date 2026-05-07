@@ -1,14 +1,14 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="automate_unsupervised_dataset_generation",                   # Package name
-    version="0.5.0",                     # Version number
+    name="automate_supervised_dataset_generation",                   # Package name
+    version="1.0.0",                     # Version number
     author="Prakhar Gandhi",                  # Author's name
     author_email="gprakhar0@gmail.com",  # Author's email
     description="A brief description",   # Short description
     long_description=open("README.md").read(),  # Long description from README
     long_description_content_type="text/markdown",
-    url="https://github.com/prakHr/automate-unsupervised-dataset-generation",  # URL of the project
+    url="https://github.com/prakHr/automate-supervised-dataset-generation",  # URL of the project
     packages=find_packages(),            # Automatically discover modules
     classifiers=[
         "Programming Language :: Python :: 3",
