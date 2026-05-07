@@ -1,270 +1,191 @@
+import os
+import warnings
+import logging
+warnings.filterwarnings("ignore")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
+logging.basicConfig(level=logging.ERROR)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+import inspect
+from inspect import getargspec
+import numpy as np
+import sklearn
+import hyperopt
 import time
 import multiprocessing 
 from mpire import WorkerPool
-from playwright.sync_api import sync_playwright
 from pprint import pprint
+from transformers import logging
+logging.set_verbosity_error()
+from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
+import torch
+from sklearn.model_selection import train_test_split
+from hpsklearn import HyperoptEstimator, any_classifier, svc, svc_linear, svc_rbf, svc_poly, svc_sigmoid, liblinear_svc
+from hpsklearn import knn, ada_boost, gradient_boosting,random_forest,extra_trees,decision_tree,sgd,xgboost_classification
+from hpsklearn import multinomial_nb,gaussian_nb,passive_aggressive,linear_discriminant_analysis,quadratic_discriminant_analysis
+from hpsklearn import rbm,colkmeans,one_vs_rest,one_vs_one,output_code
+from hyperopt import tpe
+from sklearn.feature_extraction.text import TfidfVectorizer
+from transformers import BertTokenizer, BertModel
+import torch
+from sklearn.model_selection import train_test_split
+from hyperopt import tpe
+from hpsklearn import HyperoptEstimator, ada_boost, extra_trees, gaussian_nb, decision_tree
+from hpsklearn import quadratic_discriminant_analysis, passive_aggressive, sgd, svc_linear, svc
+from hpsklearn import xgboost_classification, gradient_boosting, random_forest, knn, linear_discriminant_analysis
+import languagemodels as lm
+from nltk.corpus import wordnet
+from transformers import pipeline
 
+num_cores = max(multiprocessing.cpu_count()//2,1)
 
-def extract_text_from_url(url,sleep_time):
-    time.sleep(2)
-    """
-    Extract the main text content from a given URL.
-    """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)  # Use headless mode
-        page = browser.new_page()
+unmasker = pipeline("fill-mask", model="bert-base-uncased",framework="pt")
+tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+model = BertModel.from_pretrained('bert-base-uncased')
 
-        try:
-            # Navigate to the URL
-            page.goto(url, wait_until="domcontentloaded", timeout=sleep_time)
+def preprocess_texts(texts):
+    inputs = tokenizer(texts, return_tensors='pt', padding=True, truncation=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
 
-            # Extract all text from <p> and <div> elements
-            paragraphs = page.locator("p").all_text_contents()  # All <p> tags
-            div_texts = page.locator("div").all_text_contents()  # All <div> tags
+    sentence_embeddings = outputs.last_hidden_state[:, 0, :]
+    sentence_embeddings_np = sentence_embeddings.numpy()
+    return sentence_embeddings_np
 
-            # Combine and deduplicate text content
-            main_text = "\n".join(set(paragraphs + div_texts))
-            return {"url": url, "text": main_text}
-        except Exception as e:
-            # print(e)
-            pass
-        finally:
-            browser.close()
-    return  {"url": url, "text":""}
-# # Example usage
-# if __name__ == "__main__":
-#     urls = [
-#         "https://example.com",
-#         "https://openai.com",
-#         "https://www.wikipedia.org"
-#     ]
+def train_models(name,classifier,X_train, X_test, y_train, y_test,max_evals=10,trial_timeout=120):
+    try:
+        estim = HyperoptEstimator(
+            classifier=classifier(name),
+            algo=tpe.suggest,
+            max_evals=max_evals,
+            trial_timeout=trial_timeout
+        )
+
+        estim.fit(X_train, y_train)
+
+        # Collect results
+        my_dict = {
+            "best_model": estim.best_model(),
+            "best_score": estim.score(X_test, y_test)
+        }
+        return my_dict
+    except Exception as e:
+        return {
+            "error":str(e)
+        }
+def apply_ml_example(labelled_dataset,test_size=0.2,max_evals=10,trial_timeout=120):
     
-#     for url in urls:
-#         result = extract_text_from_url(url)
-#         if "error" in result:
-#             print(f"Error extracting {url}: {result['error']}")
-#         else:
-#             print(f"Text from {url}:\n{result['text'][:500]}...\n")  # Show first 500 characters
+    available_classifier_dict = {
+        'AdaBoostClassifier': ada_boost,
+        'ExtraTreeClassifier': extra_trees,
+        'GaussianNB': gaussian_nb,
+    }
 
+    # Extract texts and labels, convert labels to strings
+    texts = [labelled_data['texts'][0] for labelled_data in labelled_dataset]
+    labels_str = [labelled_data['labels'][0] for labelled_data in labelled_dataset]  # Convert labels to strings
+    
+    labels_str = list(set(labels_str))
+    mapping = {}
+    for i in range(len(labels_str)):
+        mapping[labels_str[i]] = i
+    labels = [mapping[labelled_data['labels'][0]] for labelled_data in labelled_dataset]  #
+    X = preprocess_texts(texts)
 
-# Initialize a browser for each worker
-def extract_all_url_sync(query, task,sleep_time):
-    time.sleep(2)
-    urls = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)  # Start browser per worker
-        page = browser.new_page()
-        try:
-            # Go to Google
-            page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=sleep_time)
+    X_train, X_test, y_train, y_test = train_test_split(X, labels, test_size=test_size)
 
-            # Accept cookies if present
-            if page.locator("button:has-text('I agree')").count() > 0:
-                page.locator("button:has-text('I agree')").click()
-
-            # Fill in the search query
-            search_input = page.locator("textarea[name='q']")
-            search_input.fill(query)
-            search_input.press("Enter")
-
-            # Wait for search results to load
-            page.wait_for_selector("a:has(h3)", timeout=sleep_time)
-
-            # Extract URLs from the first page
-            for element in page.locator("a:has(h3)").all():
-                url = element.get_attribute("href")
-                if url:
-                    urls+=[{"url": url}]
-
-            # Navigate to the second page
-            next_button = page.locator(f"a[aria-label='Page {task}']")  # Locate "Next" or page 2 button
-            if next_button.count() > 0:
-                next_button.click()
-                page.wait_for_selector("a:has(h3)", timeout=sleep_time)
-
-                # Extract URLs from the second page
-                for element in page.locator("a:has(h3)").all():
-                    url = element.get_attribute("href")
-                    if url:
-                        urls+=[{"url": url}]
-        except Exception as e:
-            # print(e)
-            return urls
-        finally:
-            browser.close()  # Close the browser for this worker
-    return urls
-
-def extract_all_url_sync_without_task(query,sleep_time):
-    time.sleep(2)
-    urls = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)  # Start browser per worker
-        page = browser.new_page()
-        try:
-            # Go to Google
-            page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=sleep_time)
-
-            # Accept cookies if present
-            if page.locator("button:has-text('I agree')").count() > 0:
-                page.locator("button:has-text('I agree')").click()
-
-            # Fill in the search query
-            search_input = page.locator("textarea[name='q']")
-            search_input.fill(query)
-            search_input.press("Enter")
-
-            # Wait for search results to load
-            page.wait_for_selector("a:has(h3)", timeout=sleep_time)
-
-            # Extract URLs from the first page
-            for element in page.locator("a:has(h3)").all():
-                url = element.get_attribute("href")
-                if url:
-                    urls.append({"url": url})
-
-            # Navigate to the second page
-            next_button = page.locator(f"a[aria-label='Page 1']")  # Locate "Next" or page 2 button
-            if next_button.count() > 0:
-                next_button.click()
-                page.wait_for_selector("a:has(h3)", timeout=sleep_time)
-
-                # Extract URLs from the second page
-                for element in page.locator("a:has(h3)").all():
-                    url = element.get_attribute("href")
-                    if url:
-                        urls+=[{"url": url}]
-        except Exception as e:
-            # print(e)
-            return urls
-        finally:
-            browser.close()  # Close the browser for this worker
-    return urls
-def find_number_of_google_pages(query,sleep_time):
-    time.sleep(2)
-    """
-    Finds the total number of pages for a Google search query.
-    """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)  # Use headless browser
-        page = browser.new_page()
-
-        try:
-            # Navigate to Google
-            page.goto("https://www.google.com", wait_until="domcontentloaded")
-
-            # Accept cookies if prompted
-            if page.locator("button:has-text('I agree')").count() > 0:
-                page.locator("button:has-text('I agree')").click()
-
-            # Perform a search
-            search_input = page.locator("textarea[name='q']")
-            search_input.fill(query)
-            search_input.press("Enter")
-
-            # Wait for the search results to load
-            page.wait_for_selector("a:has(h3)", timeout=sleep_time)
-
-            # Locate the pagination section
-            pagination_elements = page.locator("td a").all_text_contents()
-
-            # Extract numbers from the pagination links
-            page_numbers = [int(num) for num in pagination_elements if num.isdigit()]
-            total_pages = max(page_numbers) if page_numbers else 1
-
-            return total_pages
-        except Exception as e:
-            # print(e)
-            pass
-        finally:
-            browser.close()
-    return 0
-
-def get_description_from_url(url: str,sleep_time):
-    time.sleep(2)
-    description = None
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    results = []
+    meta_task = []
+    for i, (name, classifier) in enumerate(list(available_classifier_dict.items())):
+        my_dict = {}
+        my_dict["name"] = name
+        my_dict["classifier"] = classifier
+        my_dict["X_train"] = X_train
+        my_dict["X_test"] = X_test
+        my_dict["y_train"] = y_train
+        my_dict["y_test"] = y_test
         
-        try:
-            # Go to the target URL
-            page.goto(url, wait_until="domcontentloaded", timeout=sleep_time)
-            
-            # Attempt to retrieve the meta description content
-            # description_element = page.locator("meta[name='description']")
-            # if description_element.count() > 0:
-            #     description = description_element.get_attribute("content")
-            # else:
-            #     # If no meta description, try getting the first paragraph as a fallback
-            #     paragraph_element = page.locator("p")
-            #     if paragraph_element.count() > 0:
-            #         description = paragraph_element.first.text_content()
-            paragraphs = page.locator("p").all_text_contents()  # All <p> tags
-            
-            # Combine and deduplicate text content
-            main_text = "\n".join(set(paragraphs))
-            return main_text
-        
-        except Exception as e:
-            # print(e)
-            pass
-            # print(f"An error occurred: {e}")
-        finally:
-            browser.close()
-    
-    return ""
+        meta_task.append(my_dict)
 
-def parallel_scraping(query,num_page,sleep_time=10):
-    sleep_time*=1000
-    
-    time.sleep(2)
-    # init_browser_pool()
-    total_pages = find_number_of_google_pages(query,sleep_time)
-    
-    num_cores = multiprocessing.cpu_count()-1
-    # print(num_cores)
-    queries = [{"query":query,"task":task,"sleep_time":sleep_time} for task in range(min(num_page,total_pages))]
-    
-    with WorkerPool(n_jobs=num_cores) as pool:
-        urls = pool.map(extract_all_url_sync, queries, progress_bar=True, chunk_size=1)
-    mod_urls = []
-    for url in urls:
-        mod_urls+=url
-    new_urls = []
-    for url in mod_urls:
-        new_urls.append(url["url"])
-    new_urls=list(set(new_urls))
-    new_urls = [{"url":url,"sleep_time":sleep_time} for url in new_urls]
-    with WorkerPool(n_jobs=num_cores) as pool:
-        descriptions = pool.map(get_description_from_url, new_urls, progress_bar=True, chunk_size=1)
-    # pprint(descriptions)
-    descriptions = [{"query":descriptions[i],"sleep_time":sleep_time} for i in range(len(descriptions)) if descriptions[i]!=""]
-    # return
-    with WorkerPool(n_jobs=num_cores) as pool:
-        urls = pool.map(extract_all_url_sync_without_task, descriptions, progress_bar=True, chunk_size=1)
-    mod_urls = []
-    for url in urls:
-        mod_urls+=url
-    new_urls = []
-    for url in mod_urls:
-        new_urls.append(url["url"])
-    new_urls=list(set(new_urls))
-    new_urls = [{"url":url,"sleep_time":sleep_time} for url in new_urls]
-    with WorkerPool(n_jobs=num_cores) as pool:
-        descriptions = pool.map(get_description_from_url, new_urls, progress_bar=True, chunk_size=1)
-    # pprint(descriptions)
-    descriptions = [descriptions[i] for i in range(len(descriptions)) if descriptions[i]!=""]
-    # pprint(descriptions)
-    
-    return descriptions
+    for my_dict in meta_task:
+        name,classifier=my_dict["name"],my_dict["classifier"]
+        results.append(train_models(name,classifier,X_train, X_test, y_train, y_test,max_evals,trial_timeout))
+                
+    return {"labelled_dataset": labelled_dataset, "results": results}
 
 
-# if __name__ == "__main__":
+
+
+def get_synonyms(query, num_query=10):
+    x = "".join(list(query))
+    prompt = f"Another word for {x} is [MASK]."
+
+    results = unmasker(prompt, top_k=num_query)
+
+    synonyms = []
+    seen = set()
+
+    for r in results:
+        word = r["token_str"].strip()
+        # Keep only clean alphabetic words
+        if word.isalpha() and word.lower() not in seen:
+            seen.add(word.lower())
+            synonyms.append(word)
+
+    return synonyms
+
+
+def get_descriptions(query: str):
+    description = lm.get_wiki(query)
+    return description
+
+classifier = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli",
+    framework="pt"
+)
+
+def tag_dataset(texts, labels, inference_size):
+
+    text = texts[0]
+
+    result = classifier(
+        text,
+        candidate_labels=labels
+    )
+
+    predicted_label = result["labels"][0]
+
+    return {
+        "texts": texts,
+        "labels": predicted_label
+    }
+
+
+def parallel_scraping(query,num_page,labels,test_size=0.2,max_evals=10,trial_timeout=120,inference_size="2gb"):
+    # Load tokenizer and model
+    num_labels = len(labels)  # Example for custom labels: Spam, Not Spam, Promotional
+    model = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased", num_labels=num_labels)  # Adjust num_labels
+    syn = get_synonyms(query,num_page)
+    new_urls = [{"query":syn[i]} for i in range(num_page)]
+    with WorkerPool(n_jobs=num_cores) as pool:
+        descriptions = pool.map(get_descriptions, new_urls, progress_bar=False)
+    # Define the number of labels for your task
+    
+    descriptions = [{"texts":[descriptions[i]],"labels":labels,"inference_size":inference_size} for i in range(len(descriptions)) if descriptions[i]!=""]
+    
+    with WorkerPool(n_jobs=num_cores) as pool:
+        labelled_dataset = pool.map(tag_dataset, descriptions, progress_bar=False)
+    return apply_ml_example(labelled_dataset,test_size=test_size,max_evals=max_evals,trial_timeout=trial_timeout)
+
+# if __name__=="__main__":
 #     query = "Artificial Intelligence"
-#     num_page = 1
-#     sleep_time = 10
-#     rv = parallel_scraping(query,num_page,sleep_time)
-#     pprint(rv)
+#     num_page = 3
+#     labels = ["spam","not Spam"]
+#     inference_size = "2gb"
+#     results = parallel_scraping(query,num_page,labels,inference_size = inference_size)
+#     print(results)
 
-    
     
